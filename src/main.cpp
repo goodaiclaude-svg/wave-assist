@@ -80,7 +80,7 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         GJBaseGameLayer::handleButton(false, button, isPlayer1);
     }
 
-    void processCommands(float dt) {
+        void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         auto f = m_fields.self();
 
         for (int idx = 0; idx < 2; ++idx) {
@@ -105,6 +105,6 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
             sendSynth(wantDown, idx);
         }
 
-        GJBaseGameLayer::processCommands(dt);
-    }
+                GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
+        }
 };
