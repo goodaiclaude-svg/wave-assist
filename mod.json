@@ -1,65 +1,29 @@
 {
 	"geode": "5.0.0",
-	"gd": {
-		"win": "2.2081",
-		"android": "2.2081",
-		"mac": "2.2081",
-		"ios": "2.2081"
-	},
+	"gd": { "win": "2.2081", "android": "2.2081", "mac": "2.2081", "ios": "2.2081" },
 	"id": "roblox.wave-assist",
 	"name": "Wave Assist",
-	"version": "v1.0.0",
+	"version": "v2.0.0",
 	"developer": "Roblox",
-	"description": "Hold-to-spam assist for wave sections with steady, configurable click rate.",
+	"description": "You steer freely. In tight or closed wave and ship corridors, an auto-pilot plans a safe path and takes over until you are clear.",
 	"tags": ["gameplay", "utility"],
 	"settings": {
-		"enabled": {
-			"name": "Enable spam assist",
-			"description": "Master switch.",
-			"type": "bool",
-			"default": true
+		"enabled": { "name": "Enable assist", "description": "Master switch.", "type": "bool", "default": true },
+		"wave": { "name": "Assist wave", "description": "Auto-pilot tight wave corridors.", "type": "bool", "default": true },
+		"ship": { "name": "Assist ship", "description": "Auto-pilot tight ship corridors.", "type": "bool", "default": true },
+		"wave-gap": {
+			"name": "Wave: tight if gap under (units)", "description": "30 units = 1 block. 120 = 4 blocks.",
+			"type": "float", "default": 120.0, "min": 60.0, "max": 300.0, "control": { "slider": true, "input": true }
 		},
-		"wave-only": {
-			"name": "Wave only",
-			"description": "Only auto-spam while the player is in wave mode.",
-			"type": "bool",
-			"default": true
+		"ship-gap": {
+			"name": "Ship: tight if gap under (units)", "description": "30 units = 1 block. 150 = 5 blocks.",
+			"type": "float", "default": 150.0, "min": 80.0, "max": 400.0, "control": { "slider": true, "input": true }
 		},
-		"cps": {
-			"name": "Clicks per second",
-			"description": "Full press+release cycles per second while you hold the screen.",
-			"type": "float",
-			"default": 14.0,
-			"min": 4.0,
-			"max": 40.0,
-			"control": {
-				"slider": true,
-				"input": true
-			}
+		"hold-time": {
+			"name": "Keep assist on after corridor (s)", "description": "Stops it handing control back too early.",
+			"type": "float", "default": 0.3, "min": 0.05, "max": 1.0, "control": { "slider": true, "input": true }
 		},
-		"duty": {
-			"name": "Press duty cycle",
-			"description": "Fraction of each cycle spent pressed.",
-			"type": "float",
-			"default": 0.5,
-			"min": 0.2,
-			"max": 0.8,
-			"control": {
-				"slider": true,
-				"input": true
-			}
-		},
-		"practice-only": {
-			"name": "Practice / test mode only",
-			"description": "Only assist in practice mode or test mode.",
-			"type": "bool",
-			"default": false
-		},
-		"player2": {
-			"name": "Assist player 2 (dual)",
-			"description": "Also spam for the second player.",
-			"type": "bool",
-			"default": true
-		}
+		"practice-only": { "name": "Practice / test mode only", "description": "Assist only in practice or test mode.", "type": "bool", "default": true },
+		"player2": { "name": "Assist player 2 (dual)", "description": "Also assist the second player.", "type": "bool", "default": true }
 	}
 }
