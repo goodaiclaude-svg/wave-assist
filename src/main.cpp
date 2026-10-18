@@ -227,13 +227,14 @@ inline ShipPlan planShip(ShipModel const& m, int ud, double y0, double v0, float
 }
 
 // ---------- orbs ----------
-inline RingObject* findRing(PlayerObject* p, bool p2) {
+// RingObject has no "already activated" flag in 2.2081, so we remember which orbs we already handled.
+inline RingObject* findRing(PlayerObject* p, std::vector<RingObject*> const& used) {
     if (!p->m_touchingRings || p->m_touchingRings->count() == 0) return nullptr;
     for (auto* o : CCArrayExt<GameObject*>(p->m_touchingRings)) {
         auto* r = typeinfo_cast<RingObject*>(o);
         if (!r) continue;
         if (r->m_objectID == 1704 || r->m_objectID == 1751) continue; // dash orbs: left to you
-        if (p2 ? r->m_hasBeenActivatedP2 : r->m_hasBeenActivated) continue;
+        if (std::find(used.begin(), used.end(), r) != used.end()) continue;
         return r;
     }
     return nullptr;
@@ -250,6 +251,8 @@ struct PS {
     std::vector<Box> obs; float cPx = -1e9f; float cL = 0; int cAge = 999;
     ShipModel ship; float lastDt = 0; bool tog = false; int lastRet = -1;
     int touchTicks = 0, holdTicks = 0;
+    bool prevUser = false;
+    std::vector<RingObject*> used;
 };
 
 } // namespace wa
@@ -349,12 +352,19 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
 
         // ---- cube / ball / ufo / robot / spider / swing : real-orb auto click ----
         if (mode == 0) {
-            if (!wa::sb("cube-orbs")) return -1;
-            auto* ring = wa::findRing(p, i == 1);
+            if (!wa::sb("cube-orbs")) { s.prevUser = user; return -1; }
+            auto* ring = wa::findRing(p, s.used);
+            // you clicked this orb yourself -> don't double-click it
+            if (ring && user && !s.prevUser) {
+                s.used.push_back(ring);
+                ring = wa::findRing(p, s.used);
+            }
+            s.prevUser = user;
             s.touchTicks = ring ? s.touchTicks + 1 : 0;
             if (s.holdTicks > 0) { --s.holdTicks; return 1; }
             if (ring && s.touchTicks > wa::si("orb-delay")) {
                 if (f->eff[i]) return 0;       // let go this tick, press on the next
+                s.used.push_back(ring);        // never click the same orb twice
                 s.holdTicks = 2;
                 return 1;
             }
