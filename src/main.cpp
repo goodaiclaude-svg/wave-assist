@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <type_traits>
 #include <vector>
 
@@ -17,26 +18,29 @@ inline double sf(char const* k) { return Mod::get()->getSettingValue<double>(k);
 inline int si(char const* k) { return static_cast<int>(Mod::get()->getSettingValue<int64_t>(k)); }
 
 // ---------- obstacle gathering ----------
-inline void pushObj(GameObject* o, std::vector<Box>& out) {
+inline void pushObj(GameObject* o, std::vector<Box>& out, bool flip, bool skipSlope) {
     if (!o) return;
+    if (skipSlope && o->m_objectType == GameObjectType::Slope) return;
     auto r = o->getObjectRect();
     if (r.size.width <= 0.f || r.size.height <= 0.f) return;
-    out.push_back({r.getMinX(), r.getMinY(), r.getMaxX(), r.getMaxY()});
+    float y1 = r.getMinY(), y2 = r.getMaxY();
+    if (flip) { float t = y1; y1 = -y2; y2 = -t; }
+    out.push_back({r.getMinX(), y1, r.getMaxX(), y2});
 }
 
 template <class C>
-void takeAll(C&& c, std::vector<Box>& out) {
+void takeAll(C&& c, std::vector<Box>& out, bool flip = false, bool skipSlope = false) {
     using T = std::remove_cv_t<std::remove_reference_t<C>>;
     if constexpr (std::is_pointer_v<T>) {
         using U = std::remove_cv_t<std::remove_pointer_t<T>>;
         if (!c) return;
         if constexpr (std::is_same_v<U, CCArray>) {
-            for (auto* o : CCArrayExt<GameObject*>(c)) pushObj(o, out);
+            for (auto* o : CCArrayExt<GameObject*>(c)) pushObj(o, out, flip, skipSlope);
         } else {
-            for (auto* o : *c) pushObj(o, out);
+            for (auto* o : *c) pushObj(o, out, flip, skipSlope);
         }
     } else {
-        for (auto* o : c) pushObj(o, out);
+        for (auto* o : c) pushObj(o, out, flip, skipSlope);
     }
 }
 
@@ -46,7 +50,14 @@ inline void gather(GJBaseGameLayer* gl, float x1, float y1, float x2, float y2, 
     takeAll(gl->damagingObjectsInRect(q, false), out);
 }
 
-// ---------- gap / centre scan ----------
+inline void updKy(double& ky, bool& init, int& rej, double smp) {
+    if (!(smp > 0)) return;
+    if (!init) { ky = smp; init = true; rej = 0; }
+    else if (smp > ky * 0.25 && smp < ky * 4) { ky = ky * 0.9 + smp * 0.1; rej = 0; }
+    else if (++rej > 20) { ky = smp; rej = 0; }
+}
+
+// ---------- gap scan ----------
 struct GapInfo { float minGap; float center; };
 
 inline GapInfo scanGap(std::vector<Box> const& obs, float px, float py, float xEnd, float lo, float hi) {
@@ -69,14 +80,16 @@ inline GapInfo scanGap(std::vector<Box> const& obs, float px, float py, float xE
     return g;
 }
 
-// ---------- WAVE planner (lattice DP) ----------
-// index 0 = world-down first step, 1 = world-up first step. dT = tight margin, dL = loose margin.
-struct WavePlan { int dT[2]; int dL[2]; int N; };
+// ---------- WAVE planner: survival depth + smooth min-cost path ----------
+// index 0 = world-down first step, 1 = world-up first step
+struct WavePlan { int dT[2]; float cost[2]; int N; };
 
 inline WavePlan planWave(float x0, float y0, float lo, float hi, float slope, float dx, int N,
-                         std::vector<Box> const& obs, float half, float mT, float mL) {
+                         std::vector<Box> const& obs, float half, float mT, float mL,
+                         int d0, float Cs, float wc) {
     WavePlan P{};
     P.N = N;
+    P.cost[0] = P.cost[1] = 1e9f;
     float dy = slope * dx;
     int rows = 2 * N + 1;
     int jmin = std::max(-N, static_cast<int>(std::ceil((lo + half - y0) / dy)));
@@ -84,12 +97,11 @@ inline WavePlan planWave(float x0, float y0, float lo, float hi, float slope, fl
     if (jmin > 0) jmin = 0;
     if (jmax < 0) jmax = 0;
 
-    std::vector<uint8_t> blk(static_cast<size_t>(N + 1) * rows);
-    std::vector<int16_t> a(rows), b(rows);
-
+    size_t sz = static_cast<size_t>(N + 1) * rows;
+    std::vector<uint8_t> blkT(sz, 0), blkL(sz, 0);
     for (int pass = 0; pass < 2; ++pass) {
+        auto& blk = pass == 0 ? blkT : blkL;
         float e = half + (pass == 0 ? mT : mL);
-        std::fill(blk.begin(), blk.end(), 0);
         for (auto const& bx : obs) {
             int n1 = std::max(1, static_cast<int>(std::ceil((bx.x1 - e - x0) / dx)));
             int n2 = std::min(N, static_cast<int>(std::floor((bx.x2 + e - x0) / dx)));
@@ -101,20 +113,73 @@ inline WavePlan planWave(float x0, float y0, float lo, float hi, float slope, fl
                 for (int j = j1; j <= j2; ++j)
                     blk[static_cast<size_t>(n) * rows + (j + N)] = 1;
         }
-        std::fill(a.begin(), a.end(), 0);
-        std::fill(b.begin(), b.end(), 0);
+    }
+
+    // survival depth (tight margin)
+    {
+        std::vector<int16_t> a(rows, 0), b(rows, 0);
         for (int n = N; n >= 1; --n) {
             for (int j = jmin; j <= jmax; ++j) {
-                if (blk[static_cast<size_t>(n) * rows + (j + N)]) { b[j + N] = 0; continue; }
+                if (blkT[static_cast<size_t>(n) * rows + (j + N)]) { b[j + N] = 0; continue; }
                 int ju = std::min(j + 1, jmax), jd = std::max(j - 1, jmin);
                 b[j + N] = static_cast<int16_t>(1 + std::max(a[ju + N], a[jd + N]));
             }
             std::swap(a, b);
         }
-        int up = std::min(1, jmax), dn = std::max(-1, jmin);
-        int* dst = pass == 0 ? P.dT : P.dL;
-        dst[1] = a[up + N];
-        dst[0] = a[dn + N];
+        P.dT[1] = a[std::min(1, jmax) + N];
+        P.dT[0] = a[std::max(-1, jmin) + N];
+    }
+
+    // centre line of the corridor we are following
+    std::vector<float> cj(N + 1, 0.f);
+    {
+        float prev = 0.f;
+        for (int n = 1; n <= N; ++n) {
+            float best = prev, bestd = 1e9f;
+            bool any = false;
+            int j = jmin;
+            while (j <= jmax) {
+                if (blkT[static_cast<size_t>(n) * rows + (j + N)]) { ++j; continue; }
+                int a = j;
+                while (j <= jmax && !blkT[static_cast<size_t>(n) * rows + (j + N)]) ++j;
+                int b = j - 1;
+                float mid = (a + b) * 0.5f;
+                float d = prev < a ? a - prev : (prev > b ? prev - b : 0.f);
+                if (d < bestd || (d == bestd && std::fabs(mid - prev) < std::fabs(best - prev))) {
+                    bestd = d; best = mid; any = true;
+                }
+            }
+            cj[n] = any ? best : prev;
+            prev = cj[n];
+        }
+    }
+
+    // min-cost DP: state (n, row, dir). cost = switches + closeness to walls + off-centre
+    const float INF = 1e9f;
+    std::vector<float> A(static_cast<size_t>(2) * rows, 0.f), B(static_cast<size_t>(2) * rows, 0.f);
+    for (int n = N; n >= 1; --n) {
+        for (int j = jmin; j <= jmax; ++j) {
+            size_t cell = static_cast<size_t>(n) * rows + (j + N);
+            bool bt = blkT[cell] != 0, bl = blkL[cell] != 0;
+            float pen = (bl ? 4.f : 0.f) + wc * std::fabs(static_cast<float>(j) - cj[n]);
+            for (int d = 0; d < 2; ++d) {
+                size_t idx = static_cast<size_t>(d) * rows + (j + N);
+                if (bt) { B[idx] = INF; continue; }
+                float best = INF;
+                for (int d2 = 0; d2 < 2; ++d2) {
+                    int j2 = std::clamp(j + (d2 ? 1 : -1), jmin, jmax);
+                    float c = A[static_cast<size_t>(d2) * rows + (j2 + N)] + (d2 != d ? Cs : 0.f);
+                    best = std::min(best, c);
+                }
+                B[idx] = best >= INF ? INF : pen + best;
+            }
+        }
+        std::swap(A, B);
+    }
+    for (int a = 0; a < 2; ++a) {
+        int j1 = std::clamp(a ? 1 : -1, jmin, jmax);
+        float c = A[static_cast<size_t>(a) * rows + (j1 + N)];
+        P.cost[a] = c >= INF ? INF : c + (a != d0 ? Cs : 0.f);
     }
     return P;
 }
@@ -169,7 +234,6 @@ inline double accOf(ShipModel const& m, int ud, int hold, double v) {
 }
 
 struct ShipPlan { int depth[2]; float clear[2]; int full; };
-
 struct BS { double y, v; int first; float score; };
 
 inline ShipPlan planShip(ShipModel const& m, int ud, double y0, double v0, float x0, double dxTick,
@@ -208,7 +272,6 @@ inline ShipPlan planShip(ShipModel const& m, int ud, double y0, double v0, float
             }
         }
         x += static_cast<float>(dxTick * ticksPer);
-        // keep best few of each first action so neither branch is pruned away
         std::vector<BS> keep;
         for (int fa = 0; fa < 2; ++fa) {
             std::vector<BS> part;
@@ -226,8 +289,38 @@ inline ShipPlan planShip(ShipModel const& m, int ud, double y0, double v0, float
     return P;
 }
 
-// ---------- orbs ----------
-// RingObject has no "already activated" flag in 2.2081, so we remember which orbs we already handled.
+// ---------- CUBE orb reader ----------
+// All coordinates here are "relative": y is flipped when gravity is upside-down, so up = away from the floor.
+// returns true if the cube survives (lands, or lives through the horizon)
+inline bool simCube(double x, double y, double v, double dxTick, double ky, double g, double vmin,
+                    int ticks, float hS, float hH, std::vector<Box> const& solids,
+                    std::vector<Box> const& haz, double floorR) {
+    for (int t = 0; t < ticks; ++t) {
+        v += g;
+        if (vmin < 0 && v < vmin) v = vmin;
+        double yPrev = y;
+        y += ky * v;
+        x += dxTick;
+        if (y <= floorR + hS) return true;                       // landed on the ground
+        for (auto const& b : haz) {
+            if (x + hH > b.x1 && x - hH < b.x2 && y + hH > b.y1 && y - hH < b.y2) return false;
+        }
+        double tol = std::max(5.0, std::fabs(ky * v) + 2.0);
+        for (auto const& b : solids) {
+            if (x + hS > b.x1 && x - hS < b.x2 && y + hS > b.y1 && y - hS < b.y2) {
+                if (v <= 0 && yPrev - hS >= b.y2 - tol) return true;  // landed on top of a block
+                return false;                                          // hit a side / underside
+            }
+        }
+    }
+    return true;
+}
+
+struct CubeEnv {
+    std::vector<Box> solids, haz;
+    RingObject* ring = nullptr;
+};
+
 inline RingObject* findRing(PlayerObject* p, std::vector<RingObject*> const& used) {
     if (!p->m_touchingRings || p->m_touchingRings->count() == 0) return nullptr;
     for (auto* o : CCArrayExt<GameObject*>(p->m_touchingRings)) {
@@ -249,10 +342,19 @@ struct PS {
     float dxEma = 0, slope = 1.f; bool holdUp = true;
     float engagedUntil = -1.f;
     std::vector<Box> obs; float cPx = -1e9f; float cL = 0; int cAge = 999;
-    ShipModel ship; float lastDt = 0; bool tog = false; int lastRet = -1;
+    ShipModel ship; float lastDt = 0; bool tog = false; int lastRet = -1; int lastAct = -1;
+    // cube / orbs
     int touchTicks = 0, holdTicks = 0;
-    bool prevUser = false;
+    bool prevUser = false, prevGround = false;
     std::vector<RingObject*> used;
+    double pvr = 0;
+    double g = 0; int gN = 0;
+    double J = 0; int jN = 0;
+    double cky = 0; bool ckyInit = false; int ckyRej = 0;
+    double vminR = 0;
+    std::map<int, double> kick;      // learned orb kick by object id (relative velocity)
+    int pendKey = -1, pendUd = 0;
+    CubeEnv env;
 };
 
 } // namespace wa
@@ -265,6 +367,7 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         bool owned[2] = {false, false};
         bool injecting = false;
         float clock = 0.f;
+        float marginBoost = 0.f;     // grows after crashes while assisting
     };
 
     void waInject(int i, bool down) {
@@ -282,6 +385,47 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         if (wa::sb("practice-only") && !(pl->m_isPracticeMode || pl->m_isTestMode)) return false;
         if (!m_player1 || m_player1->m_isPlatformer) return false;
         return true;
+    }
+
+    // true = clicking this orb looks fatal while leaving it alone is survivable
+    bool waOrbVeto(wa::PS& s, PlayerObject* p, RingObject* ring, float dt, float px, float py, int ud, double vr) {
+        int id = ring->m_objectID;
+        int ri = id == 36 ? 0 : (id == 141 ? 1 : (id == 1333 ? 2 : -1));
+        auto it = s.kick.find(id);
+        if (ri < 0 && it == s.kick.end()) return false;
+        if (!s.ckyInit || s.gN < 3 || s.dxEma <= 0.05f) return false;   // physics not learned yet
+        double kick;
+        if (it != s.kick.end()) kick = it->second;
+        else {
+            if (s.jN < 2) return false;
+            static const double ratio[3] = {1.0, 0.7, 1.4};
+            kick = s.J * ratio[ri];
+        }
+        if (kick <= 0) return false;
+
+        float size = std::max(0.3f, p->m_vehicleSize);
+        float hS = 14.f * size, hH = 10.f * size;
+        float lo = this->getMinPortalY(), hi = this->getMaxPortalY();
+        if (!(hi - lo > 60.f) || hi - lo > 2000.f) { lo = py - 450.f; hi = py + 450.f; }
+        int T = std::clamp(static_cast<int>(std::lround(0.75f / std::max(dt, 0.0005f))), 30, 360);
+
+        if (s.env.ring != ring) {
+            s.env = wa::CubeEnv();
+            s.env.ring = ring;
+            float w = s.dxEma * T + 60.f;
+            CCRect q(px - 20.f, py - 420.f, w, 840.f);
+            wa::takeAll(this->staticObjectsInRect(q, false), s.env.solids, ud == 1, true);
+            wa::takeAll(this->damagingObjectsInRect(q, false), s.env.haz, ud == 1, false);
+        }
+        double yr = ud ? -py : py;
+        double floorR = ud ? -hi : lo;
+        auto sim = [&](double v0, float a, float b) {
+            return wa::simCube(px, yr, v0, s.dxEma, s.cky, s.g, s.vminR, T, a, b, s.env.solids, s.env.haz, floorR);
+        };
+        bool deadLo = !sim(kick * 0.8, hS * 0.9f, hH * 0.85f);
+        bool deadHi = !sim(kick * 1.2, hS * 1.1f, hH * 1.15f);
+        if (!(deadLo && deadHi)) return false;
+        return sim(vr, hS * 1.1f, hH * 1.15f);     // leaving it alone must be survivable
     }
 
     // returns -1 = leave input to the user, 0 = force release, 1 = force hold
@@ -305,6 +449,8 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         };
 
         if (!s.valid || std::fabs(px - s.px) > 60.f) {      // first frame or respawn
+            if (s.valid && (s.mode == 1 || s.mode == 2) && f->clock < s.engagedUntil + 0.25f)
+                f->marginBoost = std::min(6.f, f->marginBoost + 0.75f);   // crashed while assisting
             fresh();
             f->userHeld[i] = false; f->eff[i] = false;
             return -1;
@@ -338,24 +484,48 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
                 a.v = a.n ? a.v * 0.8 + dv * 0.2 : dv;
                 if (a.n < 1000) a.n++;
             }
-            if (std::fabs(v) > 1e-3 && std::fabs(dyt) > 1e-4) {
-                double smp = dyt / v;
-                if (smp > 0) {
-                    if (!m.kyInit) { m.ky = smp; m.kyInit = true; }
-                    else if (smp > m.ky * 0.25 && smp < m.ky * 4) { m.ky = m.ky * 0.9 + smp * 0.1; m.kyRej = 0; }
-                    else if (++m.kyRej > 20) { m.ky = smp; m.kyRej = 0; }
-                }
-            }
+            if (std::fabs(v) > 1e-3 && std::fabs(dyt) > 1e-4)
+                wa::updKy(m.ky, m.kyInit, m.kyRej, dyt / v);
         }
         s.px = px; s.py = py; s.pv = v;
         bool user = f->userHeld[i];
 
-        // ---- cube / ball / ufo / robot / spider / swing : real-orb auto click ----
+        // ================= CUBE / BALL / UFO / ROBOT / SPIDER / SWING =================
         if (mode == 0) {
-            if (!wa::sb("cube-orbs")) { s.prevUser = user; return -1; }
+            bool cubeMode = !(p->m_isBall || p->m_isBird || p->m_isRobot || p->m_isSpider || p->m_isSwing);
+            double sg = ud ? -1.0 : 1.0;
+            double vr = sg * v, dyr = sg * dyt;
+            bool gnd = p->m_isOnGround;
             auto* ring = wa::findRing(p, s.used);
-            // you clicked this orb yourself -> don't double-click it
-            if (ring && user && !s.prevUser) {
+
+            if (cubeMode) {                              // learn gravity, jump, orb kicks from your play
+                if (std::fabs(vr) > 1e-3 && std::fabs(dyr) > 1e-4)
+                    wa::updKy(s.cky, s.ckyInit, s.ckyRej, dyr / vr);
+                double dv = vr - s.pvr;
+                if (s.pendKey >= 0) {
+                    if (ud == s.pendUd) s.kick[s.pendKey] = vr - (s.gN >= 3 ? s.g : 0.0);
+                    s.pendKey = -1;
+                } else if (!ring) {
+                    if (!gnd && !s.prevGround && dv < -1e-6 && dv > -1e3) {
+                        s.g = s.gN ? s.g * 0.9 + dv * 0.1 : dv;
+                        if (s.gN < 1000) s.gN++;
+                    }
+                    if (s.prevGround && !gnd && vr > 1e-3) {
+                        double jj = vr - (s.gN >= 3 ? s.g : 0.0);
+                        if (s.jN < 3 || (jj > 0.6 * s.J && jj < 1.5 * s.J)) {
+                            s.J = s.jN ? s.J * 0.8 + jj * 0.2 : jj;
+                            if (s.jN < 1000) s.jN++;
+                        }
+                    }
+                }
+                s.vminR = std::min(s.vminR * 0.9995, vr);
+            }
+            s.pvr = vr; s.prevGround = gnd;
+
+            if (!wa::sb("cube-orbs")) { s.prevUser = user; return -1; }
+
+            if (ring && user && !s.prevUser) {           // you clicked this orb yourself
+                s.pendKey = ring->m_objectID; s.pendUd = ud;
                 s.used.push_back(ring);
                 ring = wa::findRing(p, s.used);
             }
@@ -363,8 +533,11 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
             s.touchTicks = ring ? s.touchTicks + 1 : 0;
             if (s.holdTicks > 0) { --s.holdTicks; return 1; }
             if (ring && s.touchTicks > wa::si("orb-delay")) {
-                if (f->eff[i]) return 0;       // let go this tick, press on the next
-                s.used.push_back(ring);        // never click the same orb twice
+                if (cubeMode && wa::sb("orb-reader") && waOrbVeto(s, p, ring, dt, px, py, ud, vr))
+                    return -1;                           // trap orb: leave it alone
+                if (f->eff[i]) return 0;                 // let go this tick, press on the next
+                s.used.push_back(ring);
+                s.pendKey = ring->m_objectID; s.pendUd = ud;
                 s.holdTicks = 2;
                 return 1;
             }
@@ -404,8 +577,10 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         if (wave) {
             float dx = std::max(5.f, L / 80.f);
             int N = static_cast<int>(std::ceil(L / dx));
-            float mT = static_cast<float>(wa::sf("wave-margin"));
-            auto P = wa::planWave(px, py, lo, hi, s.slope, dx, N, s.obs, half, mT, mT + 8.f);
+            float mT = static_cast<float>(wa::sf("wave-margin")) + f->marginBoost;
+            int d0 = (h == s.holdUp) ? 1 : 0;
+            float Cs = static_cast<float>(wa::sf("smoothness"));
+            auto P = wa::planWave(px, py, lo, hi, s.slope, dx, N, s.obs, half, mT, mT + 8.f, d0, Cs, 0.2f);
 
             bool userUp = (user == s.holdUp);
             int uD = P.dT[userUp ? 1 : 0], oD = P.dT[userUp ? 0 : 1];
@@ -414,10 +589,12 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
             if (f->clock >= s.engagedUntil) return -1;
 
             bool up;
-            if (P.dL[1] != P.dL[0]) up = P.dL[1] > P.dL[0];
-            else if (P.dT[1] != P.dT[0]) up = P.dT[1] > P.dT[0];
-            else if (trigTight && std::fabs(py - gap.center) > s.slope * dx * 0.25f) up = py < gap.center;
-            else up = userUp;
+            bool uInf = P.cost[1] >= 1e8f, dInf = P.cost[0] >= 1e8f;
+            if (uInf && dInf) up = (P.dT[1] != P.dT[0]) ? P.dT[1] > P.dT[0] : userUp;
+            else if (uInf) up = false;
+            else if (dInf) up = true;
+            else if (std::fabs(P.cost[1] - P.cost[0]) > 0.01f) up = P.cost[1] < P.cost[0];
+            else up = (d0 == 1);                       // equal: keep flying the same way
             return (up == s.holdUp) ? 1 : 0;
         }
 
@@ -432,7 +609,7 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         float decDx = 14.f;
         int ticksPer = std::max(1, static_cast<int>(std::lround(decDx / s.dxEma)));
         int D = std::clamp(static_cast<int>(L / decDx), 8, 32);
-        float mS = static_cast<float>(wa::sf("ship-margin"));
+        float mS = static_cast<float>(wa::sf("ship-margin")) + f->marginBoost;
         auto grid = wa::buildGrid(s.obs, px - 5.f, px + D * decDx + 60.f, lo, hi, half + mS);
         auto P = wa::planShip(m, ud, py, v, px, s.dxEma, ticksPer, D, grid, lo + half, hi - half);
 
@@ -441,9 +618,13 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
         if (trigTight || trigRescue) s.engagedUntil = f->clock + holdT;
         int ret = -1;
         if (f->clock < s.engagedUntil) {
+            int prefer = s.lastAct >= 0 ? s.lastAct : u;
             if (P.depth[1] != P.depth[0]) ret = P.depth[1] > P.depth[0] ? 1 : 0;
-            else if (std::fabs(P.clear[1] - P.clear[0]) > 0.5f) ret = P.clear[1] > P.clear[0] ? 1 : 0;
-            else ret = u;
+            else if (std::fabs(P.clear[1] - P.clear[0]) > 1.0f) ret = P.clear[1] > P.clear[0] ? 1 : 0;
+            else ret = prefer;
+            s.lastAct = ret;
+        } else {
+            s.lastAct = -1;
         }
         s.lastRet = ret;
         return ret;
