@@ -1,110 +1,122 @@
+
 #include <Geode/Geode.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
+#include "planner.hpp"
 
 using namespace geode::prelude;
 
-namespace {
-    bool assistActive(GJBaseGameLayer* gl) {
-        if (!Mod::get()->getSettingValue<bool>("enabled")) return false;
-        if (Mod::get()->getSettingValue<bool>("practice-only")) {
-            auto pl = PlayLayer::get();
-            if (!pl) return false;
-            if (!(pl->m_isPracticeMode || pl->m_isTestMode)) return false;
+// Collect solids / slopes / hazards in a window ahead of the player.
+static void collectObstacles(GJBaseGameLayer* gl, float x0, float x1, std::vector<wa::Obs>& out) {
+    out.clear();
+    int s0 = std::max(0, (int)std::floor((x0 - 40.f) / 100.f));
+    int s1 = (int)std::floor((x1 + 40.f) / 100.f);
+    auto& sections = gl->m_sectionObjects;
+    for (int s = s0; s <= s1 && s < (int)sections.size(); ++s) {
+        auto* v = sections[s];
+        if (!v) continue;
+        for (auto* o : *v) {
+            if (!o) continue;
+            auto t = o->m_objectType;
+            bool slope = t == GameObjectType::Slope;
+            if (t != GameObjectType::Solid && t != GameObjectType::Hazard && !slope) continue;
+            CCRect r = o->getObjectRect();
+            wa::Obs ob{r.getMinX(), r.getMinY(), r.getMaxX(), r.getMaxY()};
+            if (slope) {
+                // base slope: right angle at bottom-right. apply flips, then clockwise rotation.
+                int sx = 1, sy = -1;
+                if (o->m_isFlipX) sx = -sx;
+                if (o->m_isFlipY) sy = -sy;
+                float rot = std::fmod(o->getRotation(), 360.f);
+                if (rot < 0.f) rot += 360.f;
+                int q = ((int)std::lround(rot / 90.f)) & 3;
+                for (int k = 0; k < q; ++k) { int nx = sy, ny = -sx; sx = nx; sy = ny; }
+                ob.tri = true; ob.sx = sx; ob.sy = sy;
+            }
+            out.push_back(ob);
         }
-        return typeinfo_cast<PlayLayer*>(gl) != nullptr;
-    }
-
-    bool inWave(GJBaseGameLayer* gl, int idx) {
-        auto* p = idx == 0 ? gl->m_player1 : gl->m_player2;
-        return p && p->m_isDart;
     }
 }
 
 class $modify(WAGameLayer, GJBaseGameLayer) {
     struct Fields {
-        bool fingerDown[2] = {false, false};
-        bool spamming[2]   = {false, false};
-        bool synthDown[2]  = {false, false};
-        float phase[2]     = {0.f, 0.f};
-        bool inSynth       = false;
+        bool  userHeld[2] = {false, false}; // what your finger is doing
+        bool  curHeld[2]  = {false, false}; // what the player is actually being told
+        bool  ai[2]       = {false, false}; // assist owns this player's input
+        float hold[2]     = {0.f, 0.f};     // keeps assist on briefly after a corridor ends
+        float lastY[2]    = {0.f, 0.f};
+        float vy[2]       = {0.f, 0.f};
+        bool  inject      = false;
+        std::vector<wa::Obs> obs;
     };
 
-    void sendSynth(bool down, int idx) {
-        auto f = m_fields.self();
-        if (f->synthDown[idx] == down) return;
-        f->synthDown[idx] = down;
-        f->inSynth = true;
-        GJBaseGameLayer::handleButton(down, 1, idx == 0);
-        f->inSynth = false;
-    }
-
+    // Your touches: remember them, and block them while the assist is steering.
     void handleButton(bool down, int button, bool isPlayer1) {
-        auto f = m_fields.self();
-        int idx = isPlayer1 ? 0 : 1;
-
-        if (f->inSynth || button != 1 || !assistActive(this)
-            || (idx == 1 && !Mod::get()->getSettingValue<bool>("player2"))) {
-            GJBaseGameLayer::handleButton(down, button, isPlayer1);
-            return;
+        if (!m_fields->inject && button == 1) {
+            int i = isPlayer1 ? 0 : 1;
+            m_fields->userHeld[i] = down;
+            if (m_fields->ai[i]) return;
+            m_fields->curHeld[i] = down;
         }
-
-        bool waveOnly = Mod::get()->getSettingValue<bool>("wave-only");
-
-        if (down) {
-            f->fingerDown[idx] = true;
-            if (waveOnly && !inWave(this, idx)) {
-                f->spamming[idx] = false;
-                f->synthDown[idx] = true;
-                GJBaseGameLayer::handleButton(true, button, isPlayer1);
-                return;
-            }
-            f->spamming[idx] = true;
-            f->phase[idx] = 0.f;
-            f->synthDown[idx] = false;
-            sendSynth(true, idx);
-            return;
-        }
-
-        f->fingerDown[idx] = false;
-        if (f->spamming[idx]) {
-            f->spamming[idx] = false;
-            if (f->synthDown[idx]) {
-                f->synthDown[idx] = false;
-                f->inSynth = true;
-                GJBaseGameLayer::handleButton(false, 1, isPlayer1);
-                f->inSynth = false;
-            }
-            return;
-        }
-        f->synthDown[idx] = false;
-        GJBaseGameLayer::handleButton(false, button, isPlayer1);
+        GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
-        void processCommands(float dt, bool isHalfTick, bool isLastTick) {
-        auto f = m_fields.self();
+    void waSend(int i, bool down) {
+        m_fields->inject = true;
+        GJBaseGameLayer::handleButton(down, 1, i == 0);
+        m_fields->inject = false;
+        m_fields->curHeld[i] = down;
+    }
 
-        for (int idx = 0; idx < 2; ++idx) {
-            if (!f->spamming[idx]) continue;
+    void waRelease(int i) {
+        if (!m_fields->ai[i]) return;
+        m_fields->ai[i] = false;                      // hand control back to your finger
+        if (m_fields->curHeld[i] != m_fields->userHeld[i]) waSend(i, m_fields->userHeld[i]);
+    }
 
-            bool stop = !assistActive(this)
-                || (Mod::get()->getSettingValue<bool>("wave-only") && !inWave(this, idx));
-            if (stop) {
-                f->spamming[idx] = false;
-                if (f->fingerDown[idx] && !f->synthDown[idx]) sendSynth(true, idx);
-                continue;
-            }
-
-            float cps  = static_cast<float>(Mod::get()->getSettingValue<double>("cps"));
-            float duty = static_cast<float>(Mod::get()->getSettingValue<double>("duty"));
-            float period = 1.f / std::max(cps, 1.f);
-
-            f->phase[idx] += dt;
-            while (f->phase[idx] >= period) f->phase[idx] -= period;
-
-            bool wantDown = f->phase[idx] < period * duty;
-            sendSynth(wantDown, idx);
+    void waStep(float dt) {
+        auto mod = Mod::get();
+        bool on = mod->getSettingValue<bool>("enabled");
+        if (on && mod->getSettingValue<bool>("practice-only")) {
+            auto pl = PlayLayer::get();
+            on = pl && (pl->m_isPracticeMode || pl->m_isTestMode);
         }
+        for (int i = 0; i < 2; ++i) {
+            PlayerObject* p = i == 0 ? m_player1 : m_player2;
+            bool active = on && p && !p->m_isDead &&
+                (i == 0 || (m_gameState.m_isDualMode && mod->getSettingValue<bool>("player2")));
+            bool wave = active && p->m_isDart && mod->getSettingValue<bool>("wave");
+            bool ship = active && !p->m_isDart && p->m_isShip && mod->getSettingValue<bool>("ship");
+            if (!wave && !ship) { waRelease(i); continue; }
 
-                GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
+            float px = p->getPositionX(), py = p->getPositionY();
+            float speed = std::max(1.f, p->m_playerSpeed);
+            float step = 30.f * speed;
+            float gap = (float)mod->getSettingValue<double>(ship ? "ship-gap" : "wave-gap");
+
+            collectObstacles(this, px - 40.f, px + wa::N * step, m_fields->obs);
+            auto plan = wa::makePlan(m_fields->obs, px, py, step, ship ? 0.55f : 1.0f,
+                                     ship ? 14.f : 8.f, getMinPortalY(), getMaxPortalY(), gap);
+
+            float vyRaw = dt > 0.f ? (py - m_fields->lastY[i]) / dt : 0.f;
+            if (std::abs(vyRaw) > 4000.f) vyRaw = 0.f;
+            m_fields->vy[i] = 0.6f * m_fields->vy[i] + 0.4f * vyRaw;
+            m_fields->lastY[i] = py;
+
+            if (plan.tight && plan.ok) m_fields->hold[i] = (float)mod->getSettingValue<double>("hold-time");
+            else m_fields->hold[i] -= dt;
+
+            if (m_fields->hold[i] <= 0.f || !plan.ok) { waRelease(i); continue; }
+
+            m_fields->ai[i] = true;
+            float dir = p->m_isUpsideDown ? -1.f : 1.f;
+            float y = ship ? py + m_fields->vy[i] * 0.12f : py;   // ship: steer by predicted height
+            bool want = (plan.targetY - y) * dir > 0.f;
+            if (want != m_fields->curHeld[i]) waSend(i, want);
         }
+    }
+
+    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        waStep(dt);
+        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
+    }
 };
