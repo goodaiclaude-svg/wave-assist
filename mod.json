@@ -3,16 +3,21 @@
 	"gd": { "win": "2.2081", "android": "2.2081", "mac": "2.2081", "ios": "2.2081" },
 	"id": "roblox.wave-assist",
 	"name": "Wave Assist",
-	"version": "v3.0.0",
+	"version": "v4.0.0",
 	"developer": "Roblox",
-	"description": "Wave and ship auto-pilot that rescues you in tight or deadly sections, plus cube orb auto-click on real orbs only.",
+	"description": "Smooth wave and ship auto-pilot that rescues you in tight or deadly sections, plus an orb reader that clicks only real orbs and skips deadly ones.",
 	"tags": ["gameplay", "utility"],
 	"settings": {
 		"enabled": { "name": "Enable assist", "description": "Master switch.", "type": "bool", "default": true },
 		"wave": { "name": "Assist wave", "type": "bool", "default": true },
 		"ship": { "name": "Assist ship", "type": "bool", "default": true },
 		"cube-orbs": { "name": "Auto-click real orbs", "description": "Cube, ball, UFO, robot, spider, swing. Dash orbs are skipped.", "type": "bool", "default": true },
+		"orb-reader": { "name": "Orb reader (skip deadly orbs)", "description": "Cube only. Simulates click vs no click and skips orbs that lead to death.", "type": "bool", "default": true },
 		"rescue": { "name": "Rescue mode", "description": "Take over the moment your input would lead to death, even in wide corridors.", "type": "bool", "default": true },
+		"smoothness": {
+			"name": "Wave smoothness", "description": "Higher = longer, calmer sweeps. Lower = snappier and tighter.",
+			"type": "float", "default": 1.5, "min": 0.0, "max": 6.0, "control": { "slider": true, "input": true }
+		},
 		"wave-gap": {
 			"name": "Wave: tight if gap under (units)", "description": "30 units = 1 block.",
 			"type": "float", "default": 120.0, "min": 60.0, "max": 300.0, "control": { "slider": true, "input": true }
@@ -26,8 +31,8 @@
 			"type": "float", "default": 0.55, "min": 0.2, "max": 1.2, "control": { "slider": true, "input": true }
 		},
 		"wave-margin": {
-			"name": "Wave safety margin (units)", "description": "Extra space kept around hazards.",
-			"type": "float", "default": 2.5, "min": 0.0, "max": 12.0, "control": { "slider": true, "input": true }
+			"name": "Wave safety margin (units)", "description": "Extra space kept around hazards. It also grows by itself after crashes.",
+			"type": "float", "default": 3.0, "min": 0.0, "max": 12.0, "control": { "slider": true, "input": true }
 		},
 		"ship-margin": {
 			"name": "Ship safety margin (units)", "description": "Extra space kept around hazards.",
