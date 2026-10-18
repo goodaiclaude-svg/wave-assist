@@ -1,40 +1,40 @@
-
 #include <Geode/Geode.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include "planner.hpp"
 
 using namespace geode::prelude;
 
-// Collect solids / slopes / hazards in a window ahead of the player.
-static void collectObstacles(GJBaseGameLayer* gl, float x0, float x1, std::vector<wa::Obs>& out) {
-    out.clear();
-    int s0 = std::max(0, (int)std::floor((x0 - 40.f) / 100.f));
-    int s1 = (int)std::floor((x1 + 40.f) / 100.f);
-    auto& sections = gl->m_sectionObjects;
-    for (int s = s0; s <= s1 && s < (int)sections.size(); ++s) {
-        auto* v = sections[s];
-        if (!v) continue;
-        for (auto* o : *v) {
-            if (!o) continue;
-            auto t = o->m_objectType;
-            bool slope = t == GameObjectType::Slope;
-            if (t != GameObjectType::Solid && t != GameObjectType::Hazard && !slope) continue;
-            CCRect r = o->getObjectRect();
-            wa::Obs ob{r.getMinX(), r.getMinY(), r.getMaxX(), r.getMaxY()};
-            if (slope) {
-                // base slope: right angle at bottom-right. apply flips, then clockwise rotation.
-                int sx = 1, sy = -1;
-                if (o->m_isFlipX) sx = -sx;
-                if (o->m_isFlipY) sy = -sy;
-                float rot = std::fmod(o->getRotation(), 360.f);
-                if (rot < 0.f) rot += 360.f;
-                int q = ((int)std::lround(rot / 90.f)) & 3;
-                for (int k = 0; k < q; ++k) { int nx = sy, ny = -sx; sx = nx; sy = ny; }
-                ob.tri = true; ob.sx = sx; ob.sy = sy;
-            }
-            out.push_back(ob);
+static void addObjects(CCArray* arr, std::vector<wa::Obs>& out) {
+    if (!arr) return;
+    for (unsigned i = 0; i < arr->count(); ++i) {
+        auto* o = static_cast<GameObject*>(arr->objectAtIndex(i));
+        if (!o) continue;
+        auto t = o->m_objectType;
+        bool slope = t == GameObjectType::Slope;
+        if (t != GameObjectType::Solid && t != GameObjectType::Hazard && !slope) continue;
+        CCRect r = o->getObjectRect();
+        wa::Obs ob{r.getMinX(), r.getMinY(), r.getMaxX(), r.getMaxY()};
+        if (slope) {
+            // base slope: right angle at bottom-right. apply flips, then clockwise rotation.
+            int sx = 1, sy = -1;
+            if (o->m_isFlipX) sx = -sx;
+            if (o->m_isFlipY) sy = -sy;
+            float rot = std::fmod(o->getRotation(), 360.f);
+            if (rot < 0.f) rot += 360.f;
+            int q = ((int)std::lround(rot / 90.f)) & 3;
+            for (int k = 0; k < q; ++k) { int nx = sy, ny = -sx; sx = nx; sy = ny; }
+            ob.tri = true; ob.sx = sx; ob.sy = sy;
         }
+        out.push_back(ob);
     }
+}
+
+// Ask the game for solids / slopes / hazards in a box around the player.
+static void collectObstacles(GJBaseGameLayer* gl, float py, float x0, float x1, std::vector<wa::Obs>& out) {
+    out.clear();
+    CCRect box(x0, py - 450.f, x1 - x0, 900.f);
+    addObjects(gl->staticObjectsInRect(box, true), out);
+    addObjects(gl->damagingObjectsInRect(box, true), out);
 }
 
 class $modify(WAGameLayer, GJBaseGameLayer) {
@@ -93,7 +93,7 @@ class $modify(WAGameLayer, GJBaseGameLayer) {
             float step = 30.f * speed;
             float gap = (float)mod->getSettingValue<double>(ship ? "ship-gap" : "wave-gap");
 
-            collectObstacles(this, px - 40.f, px + wa::N * step, m_fields->obs);
+            collectObstacles(this, py, px - 40.f, px + wa::N * step, m_fields->obs);
             auto plan = wa::makePlan(m_fields->obs, px, py, step, ship ? 0.55f : 1.0f,
                                      ship ? 14.f : 8.f, getMinPortalY(), getMaxPortalY(), gap);
 
