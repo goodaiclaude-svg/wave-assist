@@ -1,13 +1,24 @@
-"settings": {
-  "enabled":         { "type": "bool",  "name": "Enabled", "default": true },
-  "adaptive":        { "type": "bool",  "name": "Adaptive window", "default": true },
-  "ship-assist":     { "type": "bool",  "name": "Ship assist", "default": true },
-  "ufo-assist":      { "type": "bool",  "name": "UFO assist", "default": true },
-  "wave-assist":     { "type": "bool",  "name": "Wave assist", "default": true },
-  "pulse-guard":     { "type": "bool",  "name": "Pulse guard (ship/UFO/wave)", "default": true },
-  "fly-ring-buffer": { "type": "bool",  "name": "Ring buffer in ship/UFO", "default": true },
-  "window-ms":       { "type": "float", "name": "Base buffer (ms)", "default": 90, "min": 0, "max": 300, "control": { "slider": true } },
-  "max-window-ms":   { "type": "float", "name": "Max buffer (ms)", "default": 180, "min": 30, "max": 400, "control": { "slider": true } },
-  "coyote-ms":       { "type": "float", "name": "Coyote time (ms)", "default": 45, "min": 0, "max": 150, "control": { "slider": true } },
-  "min-pulse-ms":    { "type": "float", "name": "Min pulse (ms)", "default": 16, "min": 0, "max": 60, "control": { "slider": true } }
+{
+  "geode": "v5.5.2",
+  "gd": {
+    "android": "*"
+  },
+  "id": "yourname.monster-input-buffer",
+  "name": "Monster Input Buffer",
+  "version": "v1.0.0",
+  "developer": "PureRL",
+  "description": "Dynamic input buffer with coyote time, ring buffer and pulse guard for cube, ship, UFO and wave.",
+  "settings": {
+    "enabled": { "type": "bool", "name": "Enabled", "default": true },
+    "adaptive": { "type": "bool", "name": "Adaptive window", "default": true },
+    "ship-assist": { "type": "bool", "name": "Ship assist", "default": true },
+    "ufo-assist": { "type": "bool", "name": "UFO assist", "default": true },
+    "wave-assist": { "type": "bool", "name": "Wave assist", "default": true },
+    "pulse-guard": { "type": "bool", "name": "Pulse guard (ship/UFO/wave)", "default": true },
+    "fly-ring-buffer": { "type": "bool", "name": "Ring buffer in ship/UFO", "default": true },
+    "window-ms": { "type": "float", "name": "Base buffer (ms)", "default": 90, "min": 0, "max": 300, "control": { "slider": true } },
+    "max-window-ms": { "type": "float", "name": "Max buffer (ms)", "default": 180, "min": 30, "max": 400, "control": { "slider": true } },
+    "coyote-ms": { "type": "float", "name": "Coyote time (ms)", "default": 45, "min": 0, "max": 150, "control": { "slider": true } },
+    "min-pulse-ms": { "type": "float", "name": "Min pulse (ms)", "default": 16, "min": 0, "max": 60, "control": { "slider": true } }
+  }
 }
