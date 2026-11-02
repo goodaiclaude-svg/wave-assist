@@ -27,7 +27,6 @@ class $modify(MonsterPlayer, PlayerObject) {
         std::deque<Ev> queue;
     };
 
-    // ---- mode helpers ----
     bool isGround() { return !(m_isShip || m_isBird || m_isDart || m_isSwing); }
     bool ringModes() { return isGround() || m_isShip || m_isBird; }
 
@@ -61,7 +60,6 @@ class $modify(MonsterPlayer, PlayerObject) {
         return std::min(w, num("max-window-ms"));
     }
 
-    // ---- the actual (possibly buffered) press ----
     bool realPush(PlayerButton btn) {
         auto f = m_fields.self();
         if (!active() || !ringModes()) return PlayerObject::pushButton(btn);
@@ -89,7 +87,6 @@ class $modify(MonsterPlayer, PlayerObject) {
         return PlayerObject::pushButton(btn);
     }
 
-    // ---- hooks ----
     bool pushButton(PlayerButton btn) {
         auto f = m_fields.self();
         if (btn != PlayerButton::Jump) return PlayerObject::pushButton(btn);
@@ -126,7 +123,6 @@ class $modify(MonsterPlayer, PlayerObject) {
         auto f = m_fields.self();
         f->clock += dt;
 
-        // run queued pulses (flush everything if we left a pulse mode)
         bool flush = !pulseOn();
         while (!f->queue.empty() && (flush || f->queue.front().due <= f->clock)) {
             auto e = f->queue.front();
